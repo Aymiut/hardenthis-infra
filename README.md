@@ -83,11 +83,13 @@ Dans `vps/backup/` :
 ## Passage d'AWS à un VPS
 
 La première version mettait tout sur AWS : ALB, Traefik sur EC2, ECS Fargate pour le site, RDS,
-ElastiCache, NAT Gateway, Secrets Manager. Elle coûtait environ 119 $ par mois. Nous avons déplacé
-le site sur un VPS à 10-15 € par mois et gardé sur AWS uniquement les labs, facturés à l'usage.
+ElastiCache, NAT Gateway, Secrets Manager. Au prix public AWS, elle coûtait environ 140 $ par mois,
+surtout à cause des ressources qui tournent en permanence : le NAT Gateway (34 $) et les deux
+conteneurs Fargate du site (27 $).
 
-Les VPC endpoints ajoutés ensuite pour isoler les labs coûtent environ 24 € par mois. C'est un
-choix de sécurité.
+Nous avons déplacé le site sur un VPS (environ 10 € par mois) et gardé sur AWS uniquement les labs,
+facturés à l'usage. Les VPC endpoints ajoutés ensuite pour isoler les labs coûtent 24 $ par mois :
+c'est un choix de sécurité. Total : environ 35 $ par mois.
 
 ## Ma part
 
