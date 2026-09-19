@@ -1,0 +1,17 @@
+[Unit]
+Description=hardenthis Postgres backup to S3
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=hardenthis
+Group=hardenthis
+# The backup script talks to the Docker daemon (pg_dump + aws-cli containers).
+SupplementaryGroups=docker
+ExecStart=/opt/hardenthis/backup/pg-backup.sh
+TimeoutStartSec=900
+# Surface failures in the journal clearly.
+StandardOutput=journal
+StandardError=journal

@@ -1,0 +1,164 @@
+# Production stack for VPS deployment.
+# Usage on VPS:
+#   copy this file and .env.example to /opt/hardenthis
+#   cp .env.example .env && edit values
+#   docker compose up -d
+#
+# Pre-requisites:
+#   - Domain DNS pointed to VPS public IP (hardenthis.com, api.hardenthis.com, *.hardenthis.com)
+#   - Ports 80 and 443 open on VPS firewall
+#   - VPS_PUBLIC_IP env var set (used by backend SSRF guard + lab security group whitelist)
+
+services:
+  traefik:
+    image: traefik:v3.6
+    restart: unless-stopped
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.redis=true"
+      - "--providers.redis.endpoints=redis:6379"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/acme/acme.json"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+      - "--log.level=${TRAEFIK_LOG_LEVEL:-INFO}"
+      - "--accesslog=true"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_acme:/acme
+    depends_on:
+      - redis
+    networks:
+      - app-net
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app-net
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--notify-keyspace-events", "KEA", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - app-net
+
+  backend:
+    image: ${BACKEND_IMAGE}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
+      REDIS_URL: redis://redis:6379
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      JWT_ACCESS_EXPIRATION: ${JWT_ACCESS_EXPIRATION:-15m}
+      JWT_REFRESH_EXPIRATION: ${JWT_REFRESH_EXPIRATION:-7d}
+      COOKIE_SECURE: "true"
+      DOMAIN_NAME: ${DOMAIN_NAME}
+      FRONTEND_URL: ${FRONTEND_URL}
+      ADMIN_SYNC_SECRET: ${ADMIN_SYNC_SECRET}
+      TERMINAL_SECRET: ${TERMINAL_SECRET}
+      LAB_MAX_DURATION_HOURS: ${LAB_MAX_DURATION_HOURS:-2}
+      MAX_ACTIVE_LABS_PER_USER: ${MAX_ACTIVE_LABS_PER_USER:-1}
+
+      # AWS — labs only
+      AWS_REGION: ${AWS_REGION}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      ECR_REGISTRY: ${ECR_REGISTRY}
+      ECS_CLUSTER_NAME: ${ECS_CLUSTER_NAME}
+      ECS_SUBNET_ID: ${ECS_SUBNET_ID}
+      ECS_SECURITY_GROUP_ID: ${ECS_SECURITY_GROUP_ID}
+      ECS_TASK_ROLE_ARN: ${ECS_TASK_ROLE_ARN}
+      ECS_EXECUTION_ROLE_ARN: ${ECS_EXECUTION_ROLE_ARN}
+      ECS_ASSIGN_PUBLIC_IP: ENABLED
+      LABS_LOG_GROUP: ${LABS_LOG_GROUP:-/ecs/hardenthis-labs}
+
+      # AWS — EC2 lab runtime (labs needing systemctl, iptables, etc.)
+      LAB_EC2_SUBNET_ID: ${LAB_EC2_SUBNET_ID}
+      LAB_EC2_SECURITY_GROUP_ID: ${LAB_EC2_SECURITY_GROUP_ID}
+      LAB_EC2_INSTANCE_PROFILE_ARN: ${LAB_EC2_INSTANCE_PROFILE_ARN}
+      LAB_EC2_INSTANCE_TYPE: ${LAB_EC2_INSTANCE_TYPE:-t3.micro}
+      S3_ASSETS_BUCKET: ${S3_ASSETS_BUCKET}
+      CDN_URL: ${CDN_URL}
+
+      # SSRF guard
+      VPS_PUBLIC_IP: ${VPS_PUBLIC_IP}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    labels:
+      - "traefik.enable=true"
+      # Middleware "cf-only" : n'autorise que les IPs de Cloudflare à atteindre
+      # l'API. Comme api.hardenthis.com est proxifié (orange), tout le trafic
+      # légitime arrive depuis Cloudflare. Sans ça, un attaquant peut joindre
+      # l'IP du VPS en direct (exposée par le wildcard gris *.hardenthis.com),
+      # forger X-Forwarded-For et contourner le rate-limiting (trust proxy: 2).
+      # Plages publiées sur https://www.cloudflare.com/ips/ (stables, à
+      # re-vérifier si Cloudflare en ajoute). Les routeurs de labs (lab-*, gris)
+      # sont créés dynamiquement via Redis et NE portent PAS cette middleware.
+      - "traefik.http.middlewares.cf-only.ipallowlist.sourcerange=173.245.48.0/20,103.21.244.0/22,103.22.200.0/22,103.31.4.0/22,141.101.64.0/18,108.162.192.0/18,190.93.240.0/20,188.114.96.0/20,197.234.240.0/22,198.41.128.0/17,162.158.0.0/15,104.16.0.0/13,104.24.0.0/14,172.64.0.0/13,131.0.72.0/22"
+      - "traefik.http.routers.backend.rule=Host(`api.${DOMAIN_NAME}`)"
+      - "traefik.http.routers.backend.entrypoints=websecure"
+      - "traefik.http.routers.backend.middlewares=cf-only"
+      - "traefik.http.routers.backend.tls.certresolver=letsencrypt"
+      - "traefik.http.services.backend.loadbalancer.server.port=3000"
+    networks:
+      - app-net
+
+  frontend:
+    image: ${FRONTEND_IMAGE}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+    depends_on:
+      - backend
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.frontend.rule=Host(`${DOMAIN_NAME}`)"
+      - "traefik.http.routers.frontend.entrypoints=websecure"
+      # hardenthis.com est aussi proxifié (orange) : on restreint pareil à Cloudflare.
+      - "traefik.http.routers.frontend.middlewares=cf-only"
+      - "traefik.http.routers.frontend.tls.certresolver=letsencrypt"
+      - "traefik.http.services.frontend.loadbalancer.server.port=3001"
+    networks:
+      - app-net
+
+volumes:
+  pgdata:
+  redisdata:
+  traefik_acme:
+
+networks:
+  app-net:
+    driver: bridge

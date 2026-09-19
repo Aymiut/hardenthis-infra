@@ -1,0 +1,48 @@
+# Terraform state files
+*.tfstate
+*.tfstate.*
+
+# Crash log files
+crash.log
+crash.*.log
+
+# Terraform directory
+.terraform/
+
+# Override files (used for local overrides)
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Sensitive variable files (never commit secrets!)
+*.tfvars
+!*.tfvars.example
+
+# Backend config (may contain secrets)
+backend.hcl
+
+# Environment files and credentials (never commit real values)
+.env
+.env.*
+!.env.example
+*creds.env
+
+# IDE and editor files
+.idea/
+*.swp
+*.swo
+*~
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+
+# Terraform plans
+*.plan
+*.tfplan

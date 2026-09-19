@@ -1,0 +1,12 @@
+aws_region    = "eu-west-3"
+project_name  = "hardenthis"
+environment   = "prod"
+
+# IPv4 publique fixe du VPS — A REMPLACER par la vraie IP avant apply
+vps_public_ip = "TODO_VPS_IP"
+
+# S3 bucket name (must be globally unique — change if "hardenthis-prod-assets" is taken)
+s3_assets_bucket = "hardenthis-prod-assets"
+
+# Root domain — used to scope S3 CORS allow-list
+domain_name = "hardenthis.com"

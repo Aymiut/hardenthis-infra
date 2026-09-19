@@ -1,0 +1,13 @@
+[Unit]
+Description=Daily hardenthis Postgres backup
+
+[Timer]
+# Daily at 03:30 (server time = UTC on this VPS), low-traffic window.
+OnCalendar=*-*-* 03:30:00
+# Run a missed backup if the VPS was off at the scheduled time.
+Persistent=true
+# Spread load / avoid exact-minute collisions.
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
