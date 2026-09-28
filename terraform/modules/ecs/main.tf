@@ -14,8 +14,8 @@ resource "aws_ecs_cluster" "this" {
 }
 
 # ---------------------------------------------------------------------------
-# Cloud Map namespace (service discovery interne)
-# Permet aux services de se trouver via DNS :
+# Cloud Map namespace (internal service discovery)
+# Lets services find each other via DNS:
 #   backend  -> backend.defendarcade-prod.internal
 #   frontend -> frontend.defendarcade-prod.internal
 # ---------------------------------------------------------------------------

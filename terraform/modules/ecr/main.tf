@@ -13,7 +13,7 @@ resource "aws_ecr_repository" "repos" {
   force_delete = true
 }
 
-# Lifecycle policy : garder les 10 dernières images, supprimer les untagged après 1 jour
+# Lifecycle policy: keep the last 10 images, remove untagged ones after 1 day
 resource "aws_ecr_lifecycle_policy" "cleanup" {
   for_each   = aws_ecr_repository.repos
   repository = each.value.name

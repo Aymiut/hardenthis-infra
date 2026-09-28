@@ -2,7 +2,7 @@ aws_region    = "eu-west-3"
 project_name  = "hardenthis"
 environment   = "prod"
 
-# IPv4 publique fixe du VPS — A REMPLACER par la vraie IP avant apply
+# Static public IPv4 of the VPS — REPLACE with the real IP before apply
 vps_public_ip = "TODO_VPS_IP"
 
 # S3 bucket name (must be globally unique — change if "hardenthis-prod-assets" is taken)

@@ -1,116 +1,114 @@
 # HardenThis · infrastructure
 
-HardenThis était une plateforme d'entraînement à la cybersécurité défensive. Chaque utilisateur
-lançait un lab : une machine volontairement mal configurée, qu'il devait corriger depuis un
-terminal dans son navigateur. Le projet n'a pas fonctionné et nous l'avons arrêté.
+HardenThis was a defensive cybersecurity training platform. Each user launched a lab: a
+deliberately misconfigured machine that they had to fix from a terminal in their browser. The
+project didn't work out and we shut it down.
 
-Ce dépôt contient l'infrastructure, publiée sans les secrets. Je l'ai écrite avec mon associé
-(voir [Ma part](#ma-part)).
+This repository contains the infrastructure, published without the secrets. I wrote it with my
+co-founder (see [My part](#my-part)).
 
-Outils : Terraform, AWS (VPC, ECS Fargate, EC2, ECR, IAM, S3, CloudWatch, VPC endpoints),
+Tools: Terraform, AWS (VPC, ECS Fargate, EC2, ECR, IAM, S3, CloudWatch, VPC endpoints),
 Docker Compose, Traefik, PostgreSQL, systemd, Cloudflare.
 
-## Contenu
+## Contents
 
-| Dossier          | Contenu                                                                                                              |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `terraform-vps/` | La version finale. AWS ne sert plus qu'aux labs.                                                                     |
-| `vps/`           | Le site sur un VPS avec Docker Compose (Traefik, NestJS, Next.js, PostgreSQL, Redis) et les sauvegardes de la base. |
-| `terraform/`     | La première version, tout sur AWS, découpée en modules. Détruite, gardée pour référence.                             |
+| Folder           | Contents                                                                                                      |
+| ---------------- | ------------------------------------------------------------------------------------------------------------- |
+| `terraform-vps/` | The final version. AWS is only used for the labs.                                                             |
+| `vps/`           | The site on a VPS with Docker Compose (Traefik, NestJS, Next.js, PostgreSQL, Redis) and the database backups. |
+| `terraform/`     | The first version, all on AWS, split into modules. Destroyed, kept for reference.                             |
 
-## Architecture finale
+## Final architecture
 
 ```
-navigateur
+browser
     │
 Cloudflare (hardenthis.com, api.hardenthis.com)
     │
 VPS, Docker Compose
-    Traefik ──► frontend Next.js
-            ──► backend NestJS ──► PostgreSQL, Redis
+    Traefik ──► Next.js frontend
+            ──► NestJS backend ──► PostgreSQL, Redis
             ──► lab-<id>.hardenthis.com ──┐
-                                          │ ports 7681 (terminal) et 9999 (validation)
+                                          │ ports 7681 (terminal) and 9999 (validation)
 AWS eu-west-3                             ▼
-    ECS Fargate ou EC2 : un lab par utilisateur, créé à la demande puis détruit
-    ECR (images des labs), CloudWatch Logs, VPC endpoints
+    ECS Fargate or EC2: one lab per user, created on demand then destroyed
+    ECR (lab images), CloudWatch Logs, VPC endpoints
 ```
 
-Le backend crée le lab avec l'API AWS, puis écrit la route `lab-<id>` dans Redis. Traefik lit
-Redis et envoie le terminal de l'utilisateur vers son lab.
+The backend creates the lab through the AWS API, then writes the `lab-<id>` route to Redis.
+Traefik reads Redis and routes the user's terminal to their lab.
 
-## Isolation des labs
+## Lab isolation
 
-Un lab donne un accès root à l'utilisateur. La limite ne peut donc pas être dans le conteneur :
-elle est dans le réseau AWS (`terraform-vps/main.tf`).
+A lab gives the user root access, so the boundary can't be the container: it is the AWS network
+(`terraform-vps/main.tf`).
 
-- **Entrée** : seulement depuis l'IP du VPS, sur les ports 7681 (terminal ttyd) et 9999
-  (validation).
-- **Sortie** : aucune règle vers `0.0.0.0/0`. Le téléchargement de l'image et l'envoi des logs
-  passent par des VPC endpoints privés (`ecr.api`, `ecr.dkr`, `logs`, et un endpoint gateway S3
-  pour les couches d'image).
-- **DNS** : seulement le résolveur interne du VPC.
-- **Rôle IAM du lab** : aucune permission.
+- **Ingress**: only from the VPS IP, on ports 7681 (ttyd terminal) and 9999 (validation).
+- **Egress**: no rule to `0.0.0.0/0`. Image pulls and log shipping go through private VPC
+  endpoints (`ecr.api`, `ecr.dkr`, `logs`, plus an S3 gateway endpoint for the image layers).
+- **DNS**: only the VPC's internal resolver.
+- **Lab IAM role**: no permissions.
 
-Un lab ne peut ouvrir aucune connexion vers Internet : pas de minage, pas d'attaque vers des tiers
-depuis notre compte AWS. Limite connue : un tunnel DNS à bas débit reste possible via le résolveur
-du VPC. Le bloquer demanderait Route 53 Resolver DNS Firewall, qui est payant.
+A lab can't open any connection to the Internet: no crypto mining, no attacks on third parties
+from our AWS account. Known limitation: low-bandwidth DNS tunneling is still possible through the
+VPC resolver. Blocking it would require Route 53 Resolver DNS Firewall, which is a paid service.
 
-Pour vérifier après une modification : lancer un lab, puis `curl -m 5 https://example.com` dans son
-terminal doit échouer.
+To check after a change: start a lab, then `curl -m 5 https://example.com` in its terminal must
+fail.
 
-## Droits IAM
+## IAM permissions
 
-Chaque accès a son propre utilisateur IAM, avec le minimum :
+Each access has its own IAM user, with the bare minimum:
 
-- `backend-vps` lance et arrête les labs. Il ne peut arrêter que les instances EC2 taguées
-  `ManagedBy=hardenthis` et ne peut transmettre que les rôles des labs.
-- `labs-ci` pousse dans le seul dépôt ECR des labs, avec en plus ce dont Packer a besoin pour
-  construire les images EC2.
-- `vps-backup` écrit et relit les sauvegardes, sans droit de suppression : une clé volée ne peut
-  pas effacer l'historique.
+- `backend-vps` starts and stops labs. It can only stop EC2 instances tagged
+  `ManagedBy=hardenthis` and can only pass the lab roles.
+- `labs-ci` pushes to the labs ECR repository only, plus what Packer needs to build the EC2
+  images.
+- `vps-backup` writes and reads back the backups, with no delete permission: a stolen key can't
+  wipe the history.
 
-## Sauvegardes
+## Backups
 
-Dans `vps/backup/` :
+In `vps/backup/`:
 
-- `pg-backup.sh` fait un `pg_dump` chaque nuit (timer systemd), vérifie l'archive, puis l'envoie
-  dans un bucket S3 privé, chiffré et versionné, avec 30 jours de rétention.
-- Le mot de passe de la base ne sort jamais du conteneur : `pg_dump` tourne à l'intérieur.
-- `restore-test.sh` restaure un dump dans une base jetable et compare le nombre de lignes de chaque
-  table avec la base en service.
-- healthchecks.io envoie une alerte si la sauvegarde n'a pas tourné.
+- `pg-backup.sh` runs a `pg_dump` every night (systemd timer), checks the archive, then uploads
+  it to a private, encrypted, versioned S3 bucket with 30-day retention.
+- The database password never leaves the container: `pg_dump` runs inside it.
+- `restore-test.sh` restores a dump into a throwaway database and compares the row count of each
+  table with the live database.
+- healthchecks.io sends an alert if the backup didn't run.
 
-## Passage d'AWS à un VPS
+## Moving from AWS to a VPS
 
-La première version mettait tout sur AWS : ALB, Traefik sur EC2, ECS Fargate pour le site, RDS,
-ElastiCache, NAT Gateway, Secrets Manager. Au prix public AWS, elle coûtait environ 140 $ par mois,
-surtout à cause des ressources qui tournent en permanence : le NAT Gateway (34 $) et les deux
-conteneurs Fargate du site (27 $).
+The first version put everything on AWS: ALB, Traefik on EC2, ECS Fargate for the site, RDS,
+ElastiCache, NAT Gateway, Secrets Manager. At AWS list prices it cost about $140 a month, mostly
+because of the always-on resources: the NAT Gateway ($34) and the site's two Fargate containers
+($27).
 
-Nous avons déplacé le site sur un VPS (environ 10 € par mois) et gardé sur AWS uniquement les labs,
-facturés à l'usage. Les VPC endpoints ajoutés ensuite pour isoler les labs coûtent 24 $ par mois :
-c'est un choix de sécurité. Total : environ 35 $ par mois.
+We moved the site to a VPS (about €10 a month) and kept only the labs on AWS, billed per use. The
+VPC endpoints added later to isolate the labs cost $24 a month: that is a security choice. Total:
+about $35 a month.
 
-## Ma part
+## My part
 
-- l'isolation réseau des labs (sortie Internet coupée, VPC endpoints) ;
-- les sauvegardes de la base, le test de restauration et l'alerte ;
-- le filtrage du site aux IP de Cloudflare dans Traefik ;
-- le durcissement de la première version (Redis en TLS, RDS, Secrets Manager) et les droits IAM
-  du backend.
+- the network isolation of the labs (Internet egress cut off, VPC endpoints);
+- the database backups, the restore test and the alert;
+- restricting the site to Cloudflare IPs in Traefik;
+- hardening the first version (Redis over TLS, RDS, Secrets Manager) and the backend's IAM
+  permissions.
 
-## Utiliser le code
+## Using the code
 
 ```bash
 cd terraform-vps
-cp terraform.tfvars.example terraform.tfvars   # renseigner vps_public_ip
+cp terraform.tfvars.example terraform.tfvars   # set vps_public_ip
 terraform init
 terraform plan
 ```
 
-Le bloc `backend "s3"` pointe vers le bucket d'état du projet : il faut le remplacer par le vôtre.
+The `backend "s3"` block points to the project's state bucket: replace it with your own.
 
-## Ce qui n'est pas publié
+## What is not published
 
-Les fichiers de variables réels, les `.env`, les clés, l'état Terraform, le code de l'application
-et le contenu des labs.
+The real variable files, the `.env` files, the keys, the Terraform state, the application code and
+the lab contents.

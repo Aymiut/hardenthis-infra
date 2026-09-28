@@ -1,14 +1,14 @@
 # ---------------------------------------------------------------------------
-# Traefik EC2 — Reverse proxy qui route le trafic ALB vers les services ECS
+# Traefik EC2 — Reverse proxy that routes ALB traffic to the ECS services
 #
-# Architecture : Internet -> ALB (HTTPS) -> Traefik EC2 (HTTP) -> Services ECS
+# Architecture: Internet -> ALB (HTTPS) -> Traefik EC2 (HTTP) -> ECS services
 #
-# Routes statiques (fichier) :
+# Static routes (file):
 #   hardenthis.com      -> frontend ECS (via Cloud Map DNS)
 #   api.hardenthis.com  -> backend ECS  (via Cloud Map DNS)
 #
-# Routes dynamiques (Redis) :
-#   lab-*.hardenthis.com -> lab ECS tasks (écrites par le backend au spawn)
+# Dynamic routes (Redis):
+#   lab-*.hardenthis.com -> lab ECS tasks (written by the backend at spawn)
 # ---------------------------------------------------------------------------
 
 data "aws_ami" "al2023" {

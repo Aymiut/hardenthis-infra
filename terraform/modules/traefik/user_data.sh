@@ -17,14 +17,14 @@ entryPoints:
     address: ":80"
 
 providers:
-  # Routes dynamiques pour les labs (écrites par le backend dans Redis)
+  # Dynamic routes for labs (written to Redis by the backend)
   redis:
     endpoints:
       - "${redis_endpoint}:6379"
     password: "${redis_auth_token}"
     tls:
       insecureSkipVerify: false
-  # Routes statiques pour backend/frontend
+  # Static routes for backend/frontend
   file:
     filename: /etc/traefik/routes.yml
 

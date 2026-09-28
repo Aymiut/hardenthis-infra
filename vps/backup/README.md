@@ -1,131 +1,131 @@
-# Sauvegardes Postgres — hardenthis
+# Postgres backups — hardenthis
 
-Sauvegarde quotidienne de la base Postgres du VPS vers un bucket S3 **privé,
-chiffré et versionné** (`hardenthis-prod-backups`, région `eu-west-3`).
+Daily backup of the VPS Postgres database to a **private, encrypted and
+versioned** S3 bucket (`hardenthis-prod-backups`, region `eu-west-3`).
 
 ## Architecture
 
 ```
-VPS (hardenthis user, groupe docker)
-  └─ timer systemd (03:30 UTC) ─▶ pg-backup.sh
-       ├─ docker exec hardenthis-postgres-1  pg_dump -Fc   (lecture seule)
-       ├─ vérifie l'archive (pg_restore --list)
+VPS (hardenthis user, docker group)
+  └─ systemd timer (03:30 UTC) ─▶ pg-backup.sh
+       ├─ docker exec hardenthis-postgres-1  pg_dump -Fc   (read-only)
+       ├─ verifies the archive (pg_restore --list)
        └─ docker run amazon/aws-cli  s3 cp ──▶ s3://hardenthis-prod-backups/
-                                                  postgres/<db>/AAAA/MM/JJ/hardenthis-<UTC>.dump
+                                                  postgres/<db>/YYYY/MM/DD/hardenthis-<UTC>.dump
 ```
 
-- **Format** : `pg_dump -Fc` (custom, compressé, restaurable sélectivement).
-- **Le mot de passe DB ne quitte jamais le conteneur** : `pg_dump` lit
-  `POSTGRES_PASSWORD` depuis l'environnement du conteneur Postgres.
-- **Credentials AWS** : IAM user dédié `hardenthis-prod-vps-backup` (least-priv :
-  `PutObject`/`GetObject`/`ListBucket` sur ce bucket **uniquement**, pas de
-  `Delete`). Stockés dans `/opt/hardenthis/backup/backup-creds.env` (chmod 600).
-- **Rétention** : lifecycle S3 — objets courants expirés à 30 j, versions
-  non-courantes 7 j plus tard. (Pas géré par le script.)
-- **Infra AWS** : définie dans `infra/terraform-vps/backups.tf`.
+- **Format**: `pg_dump -Fc` (custom, compressed, selectively restorable).
+- **The DB password never leaves the container**: `pg_dump` reads
+  `POSTGRES_PASSWORD` from the Postgres container's environment.
+- **AWS credentials**: dedicated IAM user `hardenthis-prod-vps-backup` (least-priv:
+  `PutObject`/`GetObject`/`ListBucket` on this bucket **only**, no
+  `Delete`). Stored in `/opt/hardenthis/backup/backup-creds.env` (chmod 600).
+- **Retention**: S3 lifecycle — current objects expire after 30 days, noncurrent
+  versions 7 days later. (Not handled by the script.)
+- **AWS infra**: defined in `infra/terraform-vps/backups.tf`.
 
-## Fichiers (sur le VPS : `/opt/hardenthis/backup/`)
+## Files (on the VPS: `/opt/hardenthis/backup/`)
 
-| Fichier | Rôle |
+| File | Purpose |
 |---|---|
-| `pg-backup.sh` | Le job de sauvegarde (dump → vérif → upload S3). |
-| `restore-test.sh` | Vérifie qu'un dump S3 est restaurable (base scratch jetable). |
-| `backup-creds.env` | Clés AWS de l'IAM `vps-backup` (chmod 600, **non versionné**). |
-| `hardenthis-backup.service` / `.timer` | Unités systemd (planification). |
+| `pg-backup.sh` | The backup job (dump → check → S3 upload). |
+| `restore-test.sh` | Checks that an S3 dump can be restored (throwaway scratch database). |
+| `backup-creds.env` | AWS keys for the `vps-backup` IAM user (chmod 600, **not versioned**). |
+| `hardenthis-backup.service` / `.timer` | systemd units (scheduling). |
 
-## Installation du timer (one-shot, nécessite root)
+## Installing the timer (one-shot, requires root)
 
 ```bash
 sudo install -m 644 /opt/hardenthis/backup/hardenthis-backup.service /etc/systemd/system/
 sudo install -m 644 /opt/hardenthis/backup/hardenthis-backup.timer   /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now hardenthis-backup.timer
-sudo systemctl list-timers hardenthis-backup.timer   # vérifier le prochain déclenchement
+sudo systemctl list-timers hardenthis-backup.timer   # check the next trigger
 ```
 
-## Lancer une sauvegarde à la main
+## Running a backup manually
 
 ```bash
 /opt/hardenthis/backup/pg-backup.sh
 ```
 
-## Vérifier qu'une sauvegarde est restaurable (sans toucher la prod)
+## Checking that a backup can be restored (without touching prod)
 
 ```bash
-# lister les sauvegardes
-aws s3 ls --recursive s3://hardenthis-prod-backups/postgres/   # ou via la console
+# list the backups
+aws s3 ls --recursive s3://hardenthis-prod-backups/postgres/   # or via the console
 
-# restaurer dans une base scratch jetable et comparer à la prod
-/opt/hardenthis/backup/restore-test.sh postgres/hardenthis/AAAA/MM/JJ/hardenthis-<UTC>.dump
+# restore into a throwaway scratch database and compare with prod
+/opt/hardenthis/backup/restore-test.sh postgres/hardenthis/YYYY/MM/DD/hardenthis-<UTC>.dump
 ```
 
-Le script crée `hardenthis_restore_test`, y restaure le dump, compare le nombre
-de lignes de **chaque table** avec la base live, puis supprime la base scratch.
-Seules des tables volatiles (`refreshtokens`, `verification_tokens`) peuvent
-légitimement différer si le dump est antérieur.
+The script creates `hardenthis_restore_test`, restores the dump into it, compares
+the row count of **every table** with the live database, then drops the scratch
+database. Only volatile tables (`refreshtokens`, `verification_tokens`) may
+legitimately differ if the dump is older.
 
-## RESTAURATION RÉELLE (cas catastrophe — à faire en connaissance de cause)
+## REAL RESTORE (disaster recovery — know what you are doing)
 
-> ⚠️ Écrase des données. Ne le faire que sur décision explicite.
+> ⚠️ Overwrites data. Only do this on an explicit decision.
 
 ```bash
-KEY="postgres/hardenthis/AAAA/MM/JJ/hardenthis-<UTC>.dump"
+KEY="postgres/hardenthis/YYYY/MM/DD/hardenthis-<UTC>.dump"
 TMP=$(mktemp -d)
 set -a; source /opt/hardenthis/backup/backup-creds.env; set +a
 
-# 1. récupérer le dump
+# 1. fetch the dump
 docker run --rm -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY \
   -e AWS_DEFAULT_REGION=eu-west-3 -v "$TMP:/data" amazon/aws-cli \
   s3 cp "s3://hardenthis-prod-backups/$KEY" /data/restore.dump
 docker cp "$TMP/restore.dump" hardenthis-postgres-1:/tmp/restore.dump
 
-# 2. (recommandé) couper le backend pour éviter les écritures concurrentes
+# 2. (recommended) stop the backend to avoid concurrent writes
 cd /opt/hardenthis && docker compose stop backend
 
-# 3. restaurer dans la base de prod (--clean --if-exists remplace les objets)
+# 3. restore into the prod database (--clean --if-exists replaces the objects)
 docker exec hardenthis-postgres-1 sh -c \
   'PGPASSWORD="$POSTGRES_PASSWORD" pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
      --clean --if-exists --no-owner /tmp/restore.dump'
 
-# 4. relancer le backend
+# 4. restart the backend
 docker compose start backend
 docker exec hardenthis-postgres-1 rm -f /tmp/restore.dump; rm -rf "$TMP"
 ```
 
-## Monitoring — dead-man's-switch (healthchecks.io)
+## Monitoring — dead-man's switch (healthchecks.io)
 
-Le job logge toujours dans le journal systemd :
+The job always logs to the systemd journal:
 ```bash
 journalctl -u hardenthis-backup.service -n 50
 ```
 
-En plus, `pg-backup.sh` ping un **dead-man's-switch** : healthchecks.io alerte
-si le succès n'arrive pas dans la fenêtre attendue. Avantage sur un simple
-`OnFailure=` : ça détecte aussi le cas où **le job n'a jamais tourné** (VPS
-éteint, timer désactivé, docker mort) — pas seulement un échec d'exécution.
+On top of that, `pg-backup.sh` pings a **dead-man's switch**: healthchecks.io
+alerts if the success ping doesn't arrive within the expected window. The
+advantage over a plain `OnFailure=`: it also catches the case where **the job
+never ran** (VPS down, timer disabled, docker dead), not just a failed run.
 
-Le script envoie trois signaux (via `HEALTHCHECK_URL`) :
-- `…/start` — au démarrage (donne la durée du run + détecte un job qui hang) ;
-- `…` (succès) — en fin de job, réarme le timer ;
-- `…/fail` — sur erreur, avec le message d'échec en corps de requête.
+The script sends three signals (via `HEALTHCHECK_URL`):
+- `…/start` — on startup (gives the run duration and catches a job that hangs);
+- `…` (success) — at the end of the job, re-arms the timer;
+- `…/fail` — on error, with the failure message as the request body.
 
-**Le ping est optionnel** : si `HEALTHCHECK_URL` n'est pas défini, les pings sont
-ignorés silencieusement — une config d'alerting absente ne peut **jamais** casser
-la sauvegarde elle-même.
+**The ping is optional**: if `HEALTHCHECK_URL` is not set, the pings are
+silently skipped — a missing alerting config can **never** break the backup
+itself.
 
-### Mise en place (une fois)
+### Setup (once)
 
-1. Sur [healthchecks.io](https://healthchecks.io) (free tier suffit), créer un
-   check : **Period = 1 day**, **Grace = 1 hour**, nom `hardenthis-pg-backup`.
-   Brancher une intégration de notif (email / Slack / Discord).
-2. Copier l'URL de ping du check (`https://hc-ping.com/<uuid>`).
-3. L'ajouter à `/opt/hardenthis/backup/backup-creds.env` (chmod 600, non versionné) :
+1. On [healthchecks.io](https://healthchecks.io) (the free tier is enough), create a
+   check: **Period = 1 day**, **Grace = 1 hour**, name `hardenthis-pg-backup`.
+   Hook up a notification integration (email / Slack / Discord).
+2. Copy the check's ping URL (`https://hc-ping.com/<uuid>`).
+3. Add it to `/opt/hardenthis/backup/backup-creds.env` (chmod 600, not versioned):
    ```bash
    HEALTHCHECK_URL=https://hc-ping.com/<uuid>
    ```
-4. Tester : `/opt/hardenthis/backup/pg-backup.sh` → le check doit passer **up**
-   sur le dashboard (et un run raté doit le passer **down** + notifier).
+4. Test: `/opt/hardenthis/backup/pg-backup.sh` → the check should go **up**
+   on the dashboard (and a failed run should turn it **down** and notify).
 
-> ⚠️ Le déploiement du script sur le VPS est **manuel** (le dépôt `infra` n'a pas
-> de CI). Copier `pg-backup.sh` mis à jour dans `/opt/hardenthis/backup/` ; aucun
-> `daemon-reload` n'est nécessaire (seuls les `.service`/`.timer` en exigent un).
+> ⚠️ Deploying the script to the VPS is **manual** (the `infra` repo has no
+> CI). Copy the updated `pg-backup.sh` into `/opt/hardenthis/backup/`; no
+> `daemon-reload` is needed (only the `.service`/`.timer` files require one).
